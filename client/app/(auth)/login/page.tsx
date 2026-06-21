@@ -2,36 +2,71 @@
 
 import { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { useAppData } from "@/context/AppDataContext";
+import { apiRequest } from "@/lib/api";
+
+interface CommitteeOption {
+  id: string;
+  name: string;
+}
 
 export default function LoginPage() {
-  const { login, currentUser, selectCommittee } = useAuth();
-  const { committees } = useAppData();
+  const { login, selectCommittee } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  // حالة اختيار اللجنة: تُملأ فقط إذا أعاد login أكثر من لجنة
+  const [pendingCommittees, setPendingCommittees] = useState<CommitteeOption[] | null>(null);
+  const [isLoadingCommittees, setIsLoadingCommittees] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setIsSubmitting(true);
 
-    const result = login(username, password);
+    const result = await login(username, password);
+    setIsSubmitting(false);
+
     if (!result.success) {
       setError(result.error || "حدث خطأ");
+      return;
+    }
+
+    if (result.requiresCommitteeSelection && result.committeeIds) {
+      setIsLoadingCommittees(true);
+      try {
+        // نجلب كل اللجان لاستخراج أسمائها (الفلترة بـ committeeIds تتم محليًا).
+        // ملاحظة: هذا طلب مؤقت من هذه الصفحة فقط، إلى أن يتحول AppDataContext
+        // بالكامل لجلب البيانات من الخادم في الخطوة القادمة.
+        const allCommittees = await apiRequest<{ _id: string; name: string }[]>(
+          "/admin/committees"
+        );
+        const myCommittees = allCommittees
+          .filter((c) => result.committeeIds!.includes(c._id))
+          .map((c) => ({ id: c._id, name: c.name }));
+        setPendingCommittees(myCommittees);
+      } catch {
+        // كحل بديل، إن فشل الجلب (مثلًا المستخدم head/judge بدون صلاحية /admin/committees)
+        // نعرض الاختيار بمعرّفات فقط بدل الأسماء
+        setPendingCommittees(
+          result.committeeIds.map((id) => ({ id, name: id }))
+        );
+      } finally {
+        setIsLoadingCommittees(false);
+      }
     }
   }
 
-  // حالة: المستخدم سجّل دخول لكنه لديه أكثر من لجنة → يجب أن يختار
-  const needsCommitteeSelection =
-    currentUser &&
-    currentUser.role !== "admin" &&
-    currentUser.committeeIds.length > 1;
+  async function handleSelectCommittee(committeeId: string) {
+    setError("");
+    const result = await selectCommittee(committeeId);
+    if (!result.success) {
+      setError(result.error || "حدث خطأ في اختيار اللجنة");
+    }
+  }
 
-  if (needsCommitteeSelection) {
-    const myCommittees = committees.filter((c) =>
-      currentUser!.committeeIds.includes(c.id)
-    );
-
+  if (pendingCommittees) {
     return (
       <main className="min-h-screen flex items-center justify-center px-4">
         <div className="w-full max-w-md rounded-2xl border border-amber-500/20 bg-neutral-900/60 backdrop-blur-xl p-8 shadow-[0_0_40px_-10px_rgba(212,175,55,0.3)]">
@@ -42,17 +77,25 @@ export default function LoginPage() {
             أنت مكلّف بأكثر من لجنة، اختر اللجنة التي تريد العمل ضمنها
           </p>
 
-          <div className="flex flex-col gap-3">
-            {myCommittees.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => selectCommittee(c.id)}
-                className="w-full rounded-xl border border-amber-500/30 bg-neutral-800/80 px-4 py-3 text-right text-neutral-100 transition hover:border-amber-400 hover:bg-neutral-800 hover:shadow-[0_0_20px_-5px_rgba(212,175,55,0.5)]"
-              >
-                {c.name}
-              </button>
-            ))}
-          </div>
+          {isLoadingCommittees ? (
+            <p className="text-center text-sm text-neutral-500">جاري التحميل...</p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {pendingCommittees.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => handleSelectCommittee(c.id)}
+                  className="w-full rounded-xl border border-amber-500/30 bg-neutral-800/80 px-4 py-3 text-right text-neutral-100 transition hover:border-amber-400 hover:bg-neutral-800 hover:shadow-[0_0_20px_-5px_rgba(212,175,55,0.5)]"
+                >
+                  {c.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {error && (
+            <p className="text-sm text-red-400 text-center mt-4">{error}</p>
+          )}
         </div>
       </main>
     );
@@ -105,15 +148,12 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className="mt-2 w-full rounded-lg bg-gradient-to-l from-amber-500 to-amber-400 px-4 py-2.5 font-semibold text-neutral-900 transition hover:from-amber-400 hover:to-amber-300 hover:shadow-[0_0_25px_-5px_rgba(212,175,55,0.7)]"
+            disabled={isSubmitting}
+            className="mt-2 w-full rounded-lg bg-gradient-to-l from-amber-500 to-amber-400 px-4 py-2.5 font-semibold text-neutral-900 transition hover:from-amber-400 hover:to-amber-300 hover:shadow-[0_0_25px_-5px_rgba(212,175,55,0.7)] disabled:opacity-50"
           >
-            تسجيل الدخول
+            {isSubmitting ? "جاري تسجيل الدخول..." : "تسجيل الدخول"}
           </button>
         </form>
-
-        <p className="mt-6 text-center text-xs text-neutral-500">
-          للتجربة: admin / admin123 — head1 / 123456 — judge1 / 123456
-        </p>
       </div>
     </main>
   );

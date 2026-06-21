@@ -27,7 +27,7 @@ export default function ScoringForm({
     indicatorScores: { indicatorId: string; value: number }[];
     total: number;
     approved: boolean;
-  }) => void;
+  }) => void | Promise<void>;
 }) {
   const [values, setValues] = useState<Record<string, number>>(() => {
     const initial: Record<string, number> = {};
@@ -39,6 +39,8 @@ export default function ScoringForm({
     });
     return initial;
   });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const total = calculateTotal(Object.values(values));
   const maxTotal = calculateTotal(indicators.map((i) => i.maxScore));
@@ -52,19 +54,27 @@ export default function ScoringForm({
     setValues((prev) => ({ ...prev, [indicatorId]: v }));
   }
 
-  function handleSubmit() {
-    onSave({
-      participantId: participant.id,
-      committeeId,
-      criterionId,
-      judgeUserId,
-      indicatorScores: indicators.map((ind) => ({
-        indicatorId: ind.id,
-        value: values[ind.id] ?? 0,
-      })),
-      total,
-      approved: false,
-    });
+  async function handleSubmit() {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        participantId: participant.id,
+        committeeId,
+        criterionId,
+        judgeUserId,
+        indicatorScores: indicators.map((ind) => ({
+          indicatorId: ind.id,
+          value: values[ind.id] ?? 0,
+        })),
+        total,
+        approved: false,
+      });
+    } catch (err: any) {
+      setSaveError(err?.message || "حدث خطأ أثناء الحفظ");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -84,7 +94,7 @@ export default function ScoringForm({
               min={0}
               max={ind.maxScore}
               value={values[ind.id]}
-              disabled={isApproved}
+              disabled={isApproved || isSaving}
               onChange={(e) => handleChange(ind.id, e.target.value, ind.maxScore)}
               className="w-24 rounded-lg border border-neutral-700 bg-neutral-800/80 px-3 py-1.5 text-center text-neutral-100 outline-none transition focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 disabled:opacity-50"
             />
@@ -100,12 +110,22 @@ export default function ScoringForm({
         </span>
       </div>
 
+      {saveError && (
+        <p className="text-sm text-red-400 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2">
+          {saveError}
+        </p>
+      )}
+
       <button
         onClick={handleSubmit}
-        disabled={isApproved}
+        disabled={isApproved || isSaving}
         className="rounded-lg bg-gradient-to-l from-amber-500 to-amber-400 px-4 py-2.5 font-semibold text-neutral-900 transition hover:from-amber-400 hover:to-amber-300 hover:shadow-[0_0_25px_-5px_rgba(212,175,55,0.7)] disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        {isApproved ? "تم الاعتماد — لا يمكن التعديل" : "حفظ الدرجة"}
+        {isApproved
+          ? "تم الاعتماد — لا يمكن التعديل"
+          : isSaving
+          ? "جاري الحفظ..."
+          : "حفظ الدرجة"}
       </button>
     </div>
   );

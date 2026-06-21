@@ -1,42 +1,70 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { useScores } from "@/context/ScoresContext";
 import { useAppData } from "@/context/AppDataContext";
-import {
-  getParticipantsForCommittee,
-  getAssignmentsForCommittee,
-  getCriteriaCountForCommittee,
-} from "@/lib/utils";
+import { apiRequest, normalizeIds, normalizeId } from "@/lib/api";
+import { getCriteriaCountForCommittee, getAssignmentsForCommittee } from "@/lib/utils";
+import { Participant, Score, CommitteeCriterionAssignment } from "@/types";
 
 export default function ReviewPage() {
   const { currentUser, activeCommitteeId } = useAuth();
-  const { scores, approveScore, approveMany } = useScores();
-  const { committees, participants, categories, assignments, criteria, users } = useAppData();
+  const { committees, assignments, criteria, users, categories } = useAppData();
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [scores, setScores] = useState<Score[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [confirmingApproveAll, setConfirmingApproveAll] = useState(false);
+
+  useEffect(() => {
+    if (!activeCommitteeId) return;
+    async function load() {
+      try {
+        const data = await apiRequest<{
+          participants: Record<string, unknown>[];
+          assignments: Record<string, unknown>[];
+          scores: Record<string, unknown>[];
+        }>("/head/review");
+        setParticipants(normalizeIds(data.participants) as unknown as Participant[]);
+        setScores(normalizeIds(data.scores) as unknown as Score[]);
+      } catch {
+        // تحميل فاشل
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    load();
+  }, [activeCommitteeId]);
 
   if (!currentUser || !activeCommitteeId) {
     return <p className="text-neutral-400">جاري التحميل...</p>;
   }
 
   const committee = committees.find((c) => c.id === activeCommitteeId);
-  const myParticipants = getParticipantsForCommittee(activeCommitteeId, committees, participants);
   const committeeAssignments = getAssignmentsForCommittee(activeCommitteeId, assignments, criteria, users);
   const criteriaCount = getCriteriaCountForCommittee(activeCommitteeId, assignments);
 
-  // كل الدرجات المُدخلة في هذه اللجنة (لحساب الإحصائيات وزر "اعتماد الكل")
-  const committeeScores = scores.filter((s) => s.committeeId === activeCommitteeId);
-  const pendingScores = committeeScores.filter((s) => !s.approved);
-  // مهم: نستخدم عدد المعايير الفريدة (criteriaCount) وليس عدد التعيينات
-  // (committeeAssignments.length) لأن معيارًا واحدًا قد يكون له أكثر من محكّم،
-  // وكل مشارك يُقيَّم في كل معيار مرة واحدة فقط فعليًا
-  const totalExpected = myParticipants.length * criteriaCount;
+  const pendingScores = scores.filter((s) => !s.approved);
+  const totalExpected = participants.length * criteriaCount;
 
-  function handleApproveAll() {
+  async function handleApproveScore(scoreId: string) {
+    await apiRequest(`/head/scores/${scoreId}/approve`, { method: "POST" });
+    setScores((prev) => prev.map((s) => (s.id === scoreId ? { ...s, approved: true } : s)));
+  }
+
+  async function handleApproveAll() {
     if (pendingScores.length === 0) return;
-    approveMany(pendingScores.map((s) => s.id));
+    const scoreIds = pendingScores.map((s) => s.id);
+    await apiRequest("/head/scores/approve-many", {
+      method: "POST",
+      body: { scoreIds },
+    });
+    const idSet = new Set(scoreIds);
+    setScores((prev) => prev.map((s) => (idSet.has(s.id) ? { ...s, approved: true } : s)));
     setConfirmingApproveAll(false);
+  }
+
+  if (isLoading) {
+    return <p className="text-neutral-400">جاري التحميل...</p>;
   }
 
   return (
@@ -59,7 +87,7 @@ export default function ReviewPage() {
           ) : (
             <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
               <span className="text-sm text-amber-200">
-                تأكيد اعتماد {pendingScores.length} درجة لكل المشاركين والمعايير دفعة واحدة؟
+                تأكيد اعتماد {pendingScores.length} درجة؟
               </span>
               <button
                 onClick={handleApproveAll}
@@ -78,16 +106,11 @@ export default function ReviewPage() {
         </div>
       </div>
 
-      {/* إحصائيات سريعة لتسهيل المراجعة الجماعية */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <StatCard label="عدد المشاركين" value={myParticipants.length.toString()} />
+        <StatCard label="عدد المشاركين" value={participants.length.toString()} />
         <StatCard label="عدد المعايير" value={criteriaCount.toString()} />
-        <StatCard label="درجات مُدخلة" value={`${committeeScores.length} / ${totalExpected}`} />
-        <StatCard
-          label="بانتظار الاعتماد"
-          value={pendingScores.length.toString()}
-          highlight={pendingScores.length > 0}
-        />
+        <StatCard label="درجات مُدخلة" value={`${scores.length} / ${totalExpected}`} />
+        <StatCard label="بانتظار الاعتماد" value={pendingScores.length.toString()} highlight={pendingScores.length > 0} />
       </div>
 
       <div className="overflow-x-auto rounded-2xl border border-amber-500/15 bg-neutral-900/50">
@@ -99,26 +122,19 @@ export default function ReviewPage() {
               {committeeAssignments.map((a) => (
                 <th key={a.id} className="px-4 py-3 text-neutral-400 font-medium whitespace-nowrap">
                   {a.criterion?.name}
-                  <div className="text-xs text-neutral-600 font-normal">
-                    {a.judge?.fullName}
-                  </div>
+                  <div className="text-xs text-neutral-600 font-normal">{a.judge?.fullName}</div>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {myParticipants.map((p) => {
+            {participants.map((p) => {
               const categoryName = categories.find((c) => c.id === p.categoryId)?.name;
-
               return (
                 <tr key={p.id} className="border-b border-neutral-800/60 hover:bg-neutral-800/20">
-                  <td className="px-4 py-3 text-neutral-100 font-medium sticky right-0 bg-neutral-900/95">
-                    {p.fullName}
-                  </td>
+                  <td className="px-4 py-3 text-neutral-100 font-medium sticky right-0 bg-neutral-900/95">{p.fullName}</td>
                   <td className="px-4 py-3 text-neutral-500">{categoryName}</td>
                   {committeeAssignments.map((a) => {
-                    // مهم: المطابقة تشمل judgeUserId أيضًا، لأن نفس المعيار قد يكون
-                    // له عدة محكّمين في اللجنة (كل عمود يخصّ محكّمًا واحدًا بالضبط)
                     const score = scores.find(
                       (s) =>
                         s.participantId === p.id &&
@@ -126,26 +142,16 @@ export default function ReviewPage() {
                         s.criterionId === a.criterionId &&
                         s.judgeUserId === a.judgeUserId
                     );
-
                     return (
-                      <td
-                        key={a.id}
-                        className={`px-4 py-3 ${
-                          score && !score.approved ? "bg-amber-500/[0.04]" : ""
-                        }`}
-                      >
+                      <td key={a.id} className={`px-4 py-3 ${score && !score.approved ? "bg-amber-500/[0.04]" : ""}`}>
                         {score ? (
                           <div className="flex items-center gap-2">
-                            <span className="text-amber-300 font-semibold">
-                              {score.total.toFixed(1)}
-                            </span>
+                            <span className="text-amber-300 font-semibold">{score.total.toFixed(1)}</span>
                             {score.approved ? (
-                              <span className="text-xs text-emerald-400 whitespace-nowrap">
-                                معتمدة ✓
-                              </span>
+                              <span className="text-xs text-emerald-400 whitespace-nowrap">معتمدة ✓</span>
                             ) : (
                               <button
-                                onClick={() => approveScore(score.id)}
+                                onClick={() => handleApproveScore(score.id)}
                                 className="text-xs rounded-md border border-amber-500/30 px-2 py-1 text-amber-300 transition hover:bg-amber-500/10 whitespace-nowrap"
                               >
                                 اعتماد
@@ -165,32 +171,18 @@ export default function ReviewPage() {
         </table>
       </div>
 
-      {myParticipants.length === 0 && (
+      {participants.length === 0 && (
         <p className="text-sm text-neutral-500 text-center py-8">لا يوجد مشاركون في لجنتك حاليًا</p>
       )}
     </div>
   );
 }
 
-function StatCard({
-  label,
-  value,
-  highlight,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-}) {
+function StatCard({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div
-      className={`rounded-2xl border p-5 ${
-        highlight ? "border-amber-400/40 bg-amber-500/5" : "border-neutral-800 bg-neutral-900/50"
-      }`}
-    >
+    <div className={`rounded-2xl border p-5 ${highlight ? "border-amber-400/40 bg-amber-500/5" : "border-neutral-800 bg-neutral-900/50"}`}>
       <p className="text-xs text-neutral-400">{label}</p>
-      <p className={`text-xl font-bold mt-1 ${highlight ? "text-amber-300" : "text-neutral-100"}`}>
-        {value}
-      </p>
+      <p className={`text-xl font-bold mt-1 ${highlight ? "text-amber-300" : "text-neutral-100"}`}>{value}</p>
     </div>
   );
 }

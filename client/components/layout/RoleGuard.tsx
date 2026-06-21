@@ -13,10 +13,12 @@ const HOME_BY_ROLE: Record<UserRole, string> = {
 
 /**
  * يحمي مسارات لوحة تحكم معيّنة (admin/head/judge):
- * - يوجّه لصفحة تسجيل الدخول إن لم يكن هناك مستخدم مسجَّل دخوله.
+ * - ينتظر حتى تكتمل محاولة استرجاع الجلسة (isLoading) قبل اتخاذ أي قرار تحويل،
+ *   حتى لا يُحوِّل المستخدم لـ /login خطأً وهو لا يزال يملك جلسة صالحة
+ *   (يحدث هذا عند تحديث الصفحة، لأن استرجاع الجلسة من التوكن يحتاج طلبًا شبكيًا).
+ * - يوجّه لصفحة تسجيل الدخول إن لم يكن هناك مستخدم مسجَّل دخوله (بعد اكتمال isLoading).
  * - يوجّه المستخدم إلى لوحته الصحيحة إن حاول دخول مسار دور لا يخصّه.
- * - يوجّه لصفحة تسجيل الدخول إن كان (head/judge) ولم يحدّد لجنته النشطة بعد
- *   (مثلاً بعد تحديث الصفحة، لأن الحالة في الذاكرة فقط ولا تُحفظ).
+ * - يوجّه لصفحة تسجيل الدخول إن كان (head/judge) ولم يحدّد لجنته النشطة بعد.
  */
 export default function RoleGuard({
   role,
@@ -25,7 +27,7 @@ export default function RoleGuard({
   role: UserRole;
   children: React.ReactNode;
 }) {
-  const { currentUser, activeCommitteeId } = useAuth();
+  const { currentUser, activeCommitteeId, isLoading } = useAuth();
   const router = useRouter();
 
   const isAuthorized =
@@ -34,6 +36,9 @@ export default function RoleGuard({
     (role === "admin" || !!activeCommitteeId);
 
   useEffect(() => {
+    // مهم جدًا: لا تتخذ أي قرار تحويل قبل اكتمال محاولة استرجاع الجلسة
+    if (isLoading) return;
+
     if (!currentUser) {
       router.replace("/login");
       return;
@@ -47,9 +52,9 @@ export default function RoleGuard({
     if (role !== "admin" && !activeCommitteeId) {
       router.replace("/login");
     }
-  }, [currentUser, activeCommitteeId, role, router]);
+  }, [currentUser, activeCommitteeId, role, router, isLoading]);
 
-  if (!isAuthorized) {
+  if (isLoading || !isAuthorized) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-neutral-950">
         <p className="text-sm text-neutral-500">جاري التحقق من الصلاحيات...</p>
